@@ -1,0 +1,99 @@
+services:
+  migrate:
+    working_dir: /app
+    build:
+      context: .
+      target: api
+    image: epms-api:local
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://epms_user:epms_pass@postgres:5432/epms_dev
+    command: ["npm", "run", "prisma:migrate:deploy", "--workspace=apps/api"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: 'no'
+
+  api:
+    working_dir: /app
+    command: ["node", "apps/api/dist/main.js"]
+    build:
+      context: .
+      target: api
+    image: epms-api:local
+    restart: unless-stopped
+    init: true
+    env_file: .env
+    environment:
+      # Local Docker defaults; use HTTPS and production mode when deploying publicly.
+      NODE_ENV: ${DOCKER_NODE_ENV:-development}
+      PORT: 3000
+      APP_URL: ${DOCKER_APP_URL:-http://localhost:8080}
+      DATABASE_URL: postgresql://epms_user:epms_pass@postgres:5432/epms_dev
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    expose:
+      - '3000'
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'node', '-e', "fetch('http://127.0.0.1:3000/api/v1/health/ready').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
+
+  web:
+    build:
+      context: .
+      target: web
+    restart: unless-stopped
+    ports:
+      - '${WEB_PORT:-8080}:80'
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'wget', '-q', '-O', '/dev/null', 'http://127.0.0.1/']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: epms-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: epms_user
+      POSTGRES_PASSWORD: epms_pass
+      POSTGRES_DB: epms_dev
+    ports:
+      - '127.0.0.1:5432:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U epms_user -d epms_dev']
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: epms-redis
+    restart: unless-stopped
+    ports:
+      - '127.0.0.1:6379:6379'
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
+  redis_data:

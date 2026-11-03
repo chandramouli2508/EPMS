@@ -1,0 +1,53 @@
+# ─── Dependencies ─────────────────────────────────────────────────────────────
+node_modules/
+
+# ─── Build outputs ────────────────────────────────────────────────────────────
+dist/
+build/
+.next/
+out/
+
+# ─── Environment ──────────────────────────────────────────────────────────────
+.env
+.env.local
+.env.*.local
+.env.*
+!.env.example
+
+# ─── Logs ─────────────────────────────────────────────────────────────────────
+*.log
+logs/
+
+# ─── IDE ──────────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+
+# ─── OS ───────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ─── TypeScript ───────────────────────────────────────────────────────────────
+*.tsbuildinfo
+
+# ─── Test coverage ────────────────────────────────────────────────────────────
+coverage/
+
+# ─── Prisma ───────────────────────────────────────────────────────────────────
+# DO commit migrations/ and schema.prisma
+# DO NOT commit the generated client if it's in a custom location
+
+# ─── Temp files ───────────────────────────────────────────────────────────────
+frd_temp.md
+
+# ─── Secrets (never commit) ───────────────────────────────────────────────────
+*.pem
+*.key
+private.pem
+public.pem
+
+# Local activity tracking output
+activity_log.csv

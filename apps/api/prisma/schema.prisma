@@ -1,0 +1,275 @@
+// This is the Prisma schema for EPMS.
+// Phase 1: Identity, Auth, Organization, Roles/Permissions, Sessions, Audit.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum EmployeeStatus {
+  ACTIVE
+  INACTIVE
+}
+
+// Ordered narrow -> wide. "Widest scope wins" is resolved in code.
+enum PermissionScope {
+  OWN         // records created by / assigned to the user
+  TEAM        // teams the user belongs to or leads
+  DEPARTMENT  // the user's department
+  ASSIGNED    // projects the user is a member of
+  ALL         // organization-wide
+}
+
+model Department {
+  id          String   @id @default(uuid()) @db.Uuid
+  code        String   @unique
+  name        String
+  description String?
+  headId      String?  @db.Uuid
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  head      Employee?  @relation("DepartmentHead", fields: [headId], references: [id], onDelete: SetNull)
+  employees Employee[] @relation("EmployeeDepartment")
+  teams     Team[]
+
+  @@map("departments")
+}
+
+model Designation {
+  id          String   @id @default(uuid()) @db.Uuid
+  code        String   @unique
+  name        String
+  description String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  employees Employee[]
+
+  @@map("designations")
+}
+
+model Team {
+  id           String   @id @default(uuid()) @db.Uuid
+  code         String   @unique
+  name         String
+  description  String?
+  departmentId String   @db.Uuid
+  leadId       String?  @db.Uuid
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  department Department   @relation(fields: [departmentId], references: [id], onDelete: Restrict)
+  lead       Employee?    @relation("TeamLead", fields: [leadId], references: [id], onDelete: SetNull)
+  members    TeamMember[]
+
+  @@index([departmentId])
+  @@map("teams")
+}
+
+model TeamMember {
+  teamId     String   @db.Uuid
+  employeeId String   @db.Uuid
+  joinedAt   DateTime @default(now())
+
+  team     Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+
+  @@id([teamId, employeeId])
+  @@index([employeeId])
+  @@map("team_members")
+}
+
+model Employee {
+  id            String         @id @default(uuid()) @db.Uuid
+  employeeCode  String         @unique
+  fullName      String
+  email         String         @unique // always stored lowercase (normalize in DTO/service)
+  phone         String?
+  status        EmployeeStatus @default(ACTIVE)
+  dateOfJoining DateTime?      @db.Date
+
+  departmentId  String? @db.Uuid
+  designationId String? @db.Uuid
+  managerId     String? @db.Uuid // reporting officer
+
+  // account / security (account is linked to the employee record)
+  passwordHash           String
+  mustChangePassword     Boolean   @default(true)
+  tempPasswordExpiresAt  DateTime?
+  passwordChangedAt      DateTime?
+  failedLoginAttempts    Int       @default(0)
+  lockedUntil            DateTime?
+  lastLoginAt            DateTime?
+  deactivatedAt          DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  department  Department?  @relation("EmployeeDepartment", fields: [departmentId], references: [id], onDelete: SetNull)
+  designation Designation? @relation(fields: [designationId], references: [id], onDelete: SetNull)
+  manager     Employee?    @relation("ReportingLine", fields: [managerId], references: [id], onDelete: SetNull)
+  reports     Employee[]   @relation("ReportingLine")
+
+  headedDepartments Department[] @relation("DepartmentHead")
+  ledTeams          Team[]       @relation("TeamLead")
+  teamMemberships   TeamMember[]
+
+  roles            EmployeeRole[]    @relation("RoleHolder")
+  rolesAssigned    EmployeeRole[]    @relation("RoleAssigner")
+  refreshTokens    RefreshToken[]
+  passwordHistory  PasswordHistory[]
+  lockouts         AccountLockout[]  @relation("LockedEmployee")
+  lockoutsReleased AccountLockout[]  @relation("LockoutReleaser")
+  auditLogs        AuditLog[]
+
+  @@index([status])
+  @@index([departmentId])
+  @@index([managerId])
+  @@map("employees")
+}
+
+model Role {
+  id          String   @id @default(uuid()) @db.Uuid
+  code        String   @unique // e.g. SYSTEM_ADMIN
+  name        String
+  description String?
+  isSystem    Boolean  @default(false) // seeded defaults: cannot be deleted
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  permissions RolePermission[]
+  employees   EmployeeRole[]
+
+  @@map("roles")
+}
+
+model Permission {
+  id          String  @id @default(uuid()) @db.Uuid
+  key         String  @unique // "module.action", e.g. "timesheets.approve"
+  module      String
+  action      String
+  description String
+  isSensitive Boolean @default(false) // financial / confidential data
+
+  roles RolePermission[]
+
+  @@index([module])
+  @@map("permissions")
+}
+
+model RolePermission {
+  roleId        String          @db.Uuid
+  permissionId  String          @db.Uuid
+  scope         PermissionScope @default(OWN) // least privilege by default
+  approvalLimit Decimal?        @db.Decimal(14, 2) // optional monetary approval authority
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@index([permissionId])
+  @@map("role_permissions")
+}
+
+model EmployeeRole {
+  employeeId   String   @db.Uuid
+  roleId       String   @db.Uuid
+  assignedAt   DateTime @default(now())
+  assignedById String?  @db.Uuid
+
+  employee   Employee  @relation("RoleHolder", fields: [employeeId], references: [id], onDelete: Cascade)
+  role       Role      @relation(fields: [roleId], references: [id], onDelete: Restrict)
+  assignedBy Employee? @relation("RoleAssigner", fields: [assignedById], references: [id], onDelete: SetNull)
+
+  @@id([employeeId, roleId])
+  @@index([roleId])
+  @@map("employee_roles")
+}
+
+model RefreshToken {
+  id            String    @id @default(uuid()) @db.Uuid
+  employeeId    String    @db.Uuid
+  familyId      String    @db.Uuid // one family per login/device
+  tokenHash     String    @unique // SHA-256 of the token; never store the raw token
+  issuedAt      DateTime  @default(now())
+  expiresAt     DateTime
+  rotatedAt     DateTime? // set when exchanged for a new token
+  revokedAt     DateTime?
+  revokedReason String?   // LOGOUT | LOGOUT_ALL | REUSE_DETECTED | DEACTIVATED | ADMIN | MAX_SESSIONS
+  userAgent     String?
+  ipAddress     String?
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@index([employeeId])
+  @@index([familyId])
+  @@index([expiresAt])
+  @@map("refresh_tokens")
+}
+
+model PasswordHistory {
+  id           String   @id @default(uuid()) @db.Uuid
+  employeeId   String   @db.Uuid
+  passwordHash String
+  createdAt    DateTime @default(now())
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@index([employeeId, createdAt])
+  @@map("password_history")
+}
+
+model AccountLockout {
+  id             String    @id @default(uuid()) @db.Uuid
+  employeeId     String    @db.Uuid
+  lockedAt       DateTime  @default(now())
+  lockedUntil    DateTime
+  failedAttempts Int
+  reason         String    @default("TOO_MANY_FAILED_ATTEMPTS")
+  ipAddress      String?
+  unlockedAt     DateTime? // set when an admin unlocks early
+  unlockedById   String?   @db.Uuid
+  unlockReason   String?
+
+  employee   Employee  @relation("LockedEmployee", fields: [employeeId], references: [id], onDelete: Cascade)
+  unlockedBy Employee? @relation("LockoutReleaser", fields: [unlockedById], references: [id], onDelete: SetNull)
+
+  @@index([employeeId, lockedAt])
+  @@map("account_lockouts")
+}
+
+// Append-only (enforced by a database trigger, see audit_log_append_only.sql).
+// Never store passwords, tokens or one-time codes here.
+model AuditLog {
+  id            String   @id @default(uuid()) @db.Uuid
+  createdAt     DateTime @default(now())
+  actorId       String?  @db.Uuid // null = system process or unauthenticated attempt
+  actorLabel    String?  // email or "system" snapshot
+  action        String   // "auth.login.success", "employee.update", "role.permissions.change"
+  entityType    String   // "Employee", "Role", ...
+  entityId      String?
+  previousValue Json?
+  newValue      Json?
+  reason        String?
+  outcome       String?  // SUCCESS | FAILURE | DENIED | APPROVED | REJECTED
+  ipAddress     String?
+  userAgent     String?
+  requestId     String?
+
+  actor Employee? @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([entityType, entityId])
+  @@index([actorId, createdAt])
+  @@index([action, createdAt])
+  @@index([createdAt])
+  @@map("audit_logs")
+}

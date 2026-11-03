@@ -1,0 +1,16 @@
+**/node_modules
+**/dist
+**/coverage
+**/*.tsbuildinfo
+.git
+.env
+.env.*
+**/.env
+**/.env.*
+*.csv
+*.docx
+*.pem
+*.key
+docs
+tracker.py
+requieremen.js
