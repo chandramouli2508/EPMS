@@ -16,11 +16,13 @@ import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Request } from 'express';
 import { CurrentUser, AuthenticatedUser } from '../../common/decorators/current-user.decorator';
 import { Permissions } from '../../common/decorators/permissions.decorator';
+import { Roles } from '../../common/decorators/roles.decorator';
 import { RolesService } from './roles.service';
 import { CreateRoleDto, DuplicateRoleDto, UpdateRoleDto } from './dto/role.dto';
 
 @ApiTags('Roles & Permissions')
 @ApiBearerAuth('JWT')
+@Roles('SYSTEM_ADMIN')
 @Controller({ version: [VERSION_NEUTRAL, '1'] })
 export class RolesController {
   constructor(private readonly rolesService: RolesService) {}
@@ -75,7 +77,9 @@ export class RolesController {
 
   @Put('roles/:id')
   @Permissions('roles.edit')
-  @ApiOperation({ summary: 'Update role permissions and scopes matrix (enforces admin protections)' })
+  @ApiOperation({
+    summary: 'Update role permissions and scopes matrix (enforces admin protections)',
+  })
   async updateRole(
     @Param('id') id: string,
     @Body() dto: UpdateRoleDto,

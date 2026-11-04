@@ -38,13 +38,13 @@ export function EmployeeDetail({ id, onClose }: { id: string; onClose: () => voi
           ...(fields.get('dateOfJoining')
             ? { dateOfJoining: String(fields.get('dateOfJoining')) }
             : {}),
-          ...(fields.has('departmentId')
+          ...(lookups.isAdmin && fields.has('departmentId')
             ? { departmentId: String(fields.get('departmentId') ?? '') || null }
             : {}),
           ...(fields.has('designationId')
             ? { designationId: String(fields.get('designationId') ?? '') || null }
             : {}),
-          ...(fields.has('managerId')
+          ...(lookups.isAdmin && fields.has('managerId')
             ? { managerId: String(fields.get('managerId') ?? '') || null }
             : {}),
         },
@@ -136,7 +136,7 @@ export function EmployeeDetail({ id, onClose }: { id: string; onClose: () => voi
                     name="departmentId"
                     defaultValue={employee.departmentId ?? ''}
                     className={inputStyle}
-                    disabled={!lookups.departments.data}
+                    disabled={!lookups.isAdmin || !lookups.departments.data}
                   >
                     <option value="">None</option>
                     {employee.departmentId &&
@@ -188,7 +188,7 @@ export function EmployeeDetail({ id, onClose }: { id: string; onClose: () => voi
                 name="managerId"
                 defaultValue={employee.managerId ?? ''}
                 className={inputStyle}
-                disabled={!lookups.managers.data}
+                disabled={!lookups.isAdmin || !lookups.managers.data}
               >
                 <option value="">None</option>
                 {employee.managerId &&

@@ -21,7 +21,7 @@ export function useEmployee(id: string) {
   });
 }
 export function useEmployeeLookups(includeForm = false) {
-  const { can } = usePermissions();
+  const { can, isAdmin } = usePermissions();
   const departments = useQuery({
     queryKey: ['employee-lookups', 'departments'],
     queryFn: employeesApi.departments,
@@ -30,7 +30,7 @@ export function useEmployeeLookups(includeForm = false) {
   const roles = useQuery({
     queryKey: ['employee-lookups', 'roles'],
     queryFn: employeesApi.roles,
-    enabled: can('roles.view'),
+    enabled: isAdmin,
   });
   const designations = useQuery({
     queryKey: ['employee-lookups', 'designations'],
@@ -42,7 +42,7 @@ export function useEmployeeLookups(includeForm = false) {
     queryFn: employeesApi.managers,
     enabled: includeForm && can('employees.view'),
   });
-  return { departments, roles, designations, managers, can };
+  return { departments, roles, designations, managers, can, isAdmin };
 }
 export function useCreateEmployee(revealPassword: (password: string) => void) {
   const client = useQueryClient();

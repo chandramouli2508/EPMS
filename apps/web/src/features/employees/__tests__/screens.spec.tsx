@@ -26,7 +26,10 @@ vi.mock('../api/employeesApi', () => ({
 }));
 const permissionState = vi.hoisted(() => ({ denied: [] as string[] }));
 vi.mock('@/shared/permissions', () => ({
-  usePermissions: () => ({ can: (key: string) => !permissionState.denied.includes(key) }),
+  usePermissions: () => ({
+    isAdmin: true,
+    can: (key: string) => !permissionState.denied.includes(key),
+  }),
   usePermission: (key: string) => !permissionState.denied.includes(key),
   Can: ({ permission, children }: { permission: string; children: React.ReactNode }) =>
     permissionState.denied.includes(permission) ? null : children,

@@ -3,6 +3,7 @@ import {
   Controller,
   Delete,
   Get,
+  ForbiddenException,
   HttpCode,
   HttpStatus,
   Ip,
@@ -18,6 +19,7 @@ import { Request } from 'express';
 import { PermissionScope } from '@prisma/client';
 import { CurrentUser, AuthenticatedUser } from '../../common/decorators/current-user.decorator';
 import { Permissions } from '../../common/decorators/permissions.decorator';
+import { Roles } from '../../common/decorators/roles.decorator';
 import { EmployeesService } from './employees.service';
 import {
   AssignRolesDto,
@@ -46,12 +48,13 @@ export class EmployeesController {
   ) {
     const userScope = user.permissions['employees.view'];
     const isOwnScopeOnly = userScope === PermissionScope.OWN;
-    const hasViewSensitive = Boolean(user.permissions['employees.view_sensitive']);
+    const hasViewSensitive = user.permissions['employees.view_sensitive'] === PermissionScope.ALL;
 
     return this.employeesService.getEmployees({
       callerId: user.id,
       hasViewSensitive,
       isOwnScopeOnly,
+      accessWhere: await this.employeesService.accessFilter(user, 'employees.view'),
       page: page ? parseInt(page, 10) : undefined,
       limit: limit ? parseInt(limit, 10) : undefined,
       search,
@@ -72,26 +75,25 @@ export class EmployeesController {
     @Ip() ip: string,
   ) {
     const userAgent = req.headers['user-agent'] as string | undefined;
+    if (!user.roles.includes('SYSTEM_ADMIN') && dto.roleCodes?.length) {
+      throw new ForbiddenException('Only administrators can assign initial roles.');
+    }
+    if (user.permissions['employees.create'] !== PermissionScope.ALL) {
+      throw new ForbiddenException('Employee creation requires organization-wide access.');
+    }
     return this.employeesService.createEmployee(dto, user.id, ip, userAgent);
   }
 
   @Get(':id')
   @Permissions('employees.view')
   @ApiOperation({ summary: 'Get employee details by ID' })
-  async getEmployeeById(
-    @Param('id') id: string,
-    @CurrentUser() user: AuthenticatedUser,
-  ) {
+  async getEmployeeById(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
     const userScope = user.permissions['employees.view'];
     const isOwnScopeOnly = userScope === PermissionScope.OWN;
-    const hasViewSensitive = Boolean(user.permissions['employees.view_sensitive']);
+    const hasViewSensitive = user.permissions['employees.view_sensitive'] === PermissionScope.ALL;
 
-    return this.employeesService.getEmployeeById(
-      id,
-      user.id,
-      hasViewSensitive,
-      isOwnScopeOnly,
-    );
+    await this.employeesService.assertRecordAccess(user, 'employees.view', id);
+    return this.employeesService.getEmployeeById(id, user.id, hasViewSensitive, isOwnScopeOnly);
   }
 
   @Patch(':id')
@@ -105,6 +107,15 @@ export class EmployeesController {
     @Ip() ip: string,
   ) {
     const userAgent = req.headers['user-agent'] as string | undefined;
+    await this.employeesService.assertRecordAccess(user, 'employees.edit', id);
+    if (
+      !user.roles.includes('SYSTEM_ADMIN') &&
+      (dto.departmentId !== undefined || dto.managerId !== undefined)
+    ) {
+      throw new ForbiddenException(
+        'Only administrators can change department or reporting assignments.',
+      );
+    }
     return this.employeesService.updateEmployee(id, dto, user.id, ip, userAgent);
   }
 
@@ -119,6 +130,7 @@ export class EmployeesController {
     @Ip() ip: string,
   ) {
     const userAgent = req.headers['user-agent'] as string | undefined;
+    await this.employeesService.assertRecordAccess(user, 'employees.deactivate', id);
     return this.employeesService.deactivateEmployee(id, user.id, ip, userAgent);
   }
 
@@ -133,12 +145,14 @@ export class EmployeesController {
     @Ip() ip: string,
   ) {
     const userAgent = req.headers['user-agent'] as string | undefined;
+    await this.employeesService.assertRecordAccess(user, 'employees.deactivate', id);
     return this.employeesService.reactivateEmployee(id, user.id, ip, userAgent);
   }
 
   @Post(':id/roles')
   @HttpCode(HttpStatus.OK)
   @Permissions('users.assign_roles')
+  @Roles('SYSTEM_ADMIN')
   @ApiOperation({ summary: 'Assign roles to employee (enforces last active admin protection)' })
   async assignRoles(
     @Param('id') id: string,
@@ -183,10 +197,7 @@ export class EmployeesController {
   @Get(':id/sessions')
   @Permissions('users.view')
   @ApiOperation({ summary: 'List active sessions for employee' })
-  async getEmployeeSessions(
-    @Param('id') id: string,
-    @CurrentUser() user: AuthenticatedUser,
-  ) {
+  async getEmployeeSessions(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
     return this.employeesService.getEmployeeSessions(id, user.familyId);
   }
 
@@ -201,12 +212,6 @@ export class EmployeesController {
     @Ip() ip: string,
   ) {
     const userAgent = req.headers['user-agent'] as string | undefined;
-    return this.employeesService.revokeEmployeeSession(
-      id,
-      familyId,
-      user.id,
-      ip,
-      userAgent,
-    );
+    return this.employeesService.revokeEmployeeSession(id, familyId, user.id, ip, userAgent);
   }
 }

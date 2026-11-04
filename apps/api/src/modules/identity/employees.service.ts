@@ -6,7 +6,8 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Prisma } from '@prisma/client';
+import { Prisma, PermissionScope } from '@prisma/client';
+import { AuthenticatedUser } from '../../common/decorators/current-user.decorator';
 import { AppErrorCode, EmployeeDto, SessionDto } from '@epms/shared';
 import * as argon2 from 'argon2';
 import * as crypto from 'crypto';
@@ -40,6 +41,57 @@ function generateTemporaryPassword(): string {
 
 @Injectable()
 export class EmployeesService {
+  async accessFilter(user: AuthenticatedUser, key: string): Promise<Prisma.EmployeeWhereInput> {
+    const scopes = user.permissionScopes?.[key];
+    if (scopes?.length) {
+      if (scopes.includes(PermissionScope.ALL)) return {};
+      const filters = await Promise.all(
+        scopes.map((scope) =>
+          this.accessFilter(
+            {
+              ...user,
+              permissionScopes: undefined,
+              permissions: { ...user.permissions, [key]: scope },
+            },
+            key,
+          ),
+        ),
+      );
+      return { OR: filters };
+    }
+    const scope = user.permissions[key];
+    if (scope === PermissionScope.ALL) return {};
+    if (scope === PermissionScope.OWN) return { id: user.id };
+    if (scope === PermissionScope.DEPARTMENT && user.departmentId)
+      return { departmentId: user.departmentId };
+    if (scope === PermissionScope.TEAM) {
+      const teams = await this.prisma.team.findMany({
+        where: {
+          isActive: true,
+          OR: [{ leadId: user.id }, { members: { some: { employeeId: user.id } } }],
+        },
+        select: { id: true, leadId: true },
+      });
+      return {
+        OR: [
+          { teamMemberships: { some: { teamId: { in: teams.map((team) => team.id) } } } },
+          { id: { in: teams.flatMap((team) => (team.leadId ? [team.leadId] : [])) } },
+        ],
+      };
+    }
+    return { id: { in: [] } };
+  }
+
+  async assertRecordAccess(user: AuthenticatedUser, key: string, id: string) {
+    const filter = await this.accessFilter(user, key);
+    const allowed = await this.prisma.employee.findFirst({
+      where: { AND: [{ id }, filter] },
+      select: { id: true },
+    });
+    if (!allowed)
+      throw new ForbiddenException('This employee record is outside your permitted scope.');
+  }
+
   private readonly tempPasswordHours: number;
 
   constructor(
@@ -107,11 +159,11 @@ export class EmployeesService {
       type: argon2.argon2id,
     });
     const now = new Date();
-    const tempPasswordExpiresAt = new Date(
-      now.getTime() + this.tempPasswordHours * 3600 * 1000,
-    );
+    const tempPasswordExpiresAt = new Date(now.getTime() + this.tempPasswordHours * 3600 * 1000);
 
     const result = await this.prisma.$transaction(async (tx) => {
+      // Serialize role assignment with role deactivation and administrator recovery checks.
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(42002);`;
       let employeeCode = dto.employeeCode?.trim();
       if (employeeCode) {
         const existingCode = await tx.employee.findUnique({
@@ -149,12 +201,18 @@ export class EmployeesService {
       });
 
       // Assign initial roles if provided, or default to EMPLOYEE
-      const roleCodes =
-        dto.roleCodes && dto.roleCodes.length > 0 ? dto.roleCodes : ['EMPLOYEE'];
+      const roleCodes = dto.roleCodes && dto.roleCodes.length > 0 ? dto.roleCodes : ['EMPLOYEE'];
 
       const roles = await tx.role.findMany({
         where: { code: { in: roleCodes }, isActive: true },
       });
+
+      if (
+        roles.length !== new Set(roleCodes).size ||
+        new Set(roleCodes).size !== roleCodes.length
+      ) {
+        throw new BadRequestException('Role codes must be unique, valid, and active.');
+      }
 
       for (const role of roles) {
         await tx.employeeRole.create({
@@ -224,6 +282,7 @@ export class EmployeesService {
     callerId: string;
     hasViewSensitive: boolean;
     isOwnScopeOnly: boolean;
+    accessWhere?: Prisma.EmployeeWhereInput;
     page?: number;
     limit?: number;
     search?: string;
@@ -236,6 +295,7 @@ export class EmployeesService {
     const skip = (page - 1) * limit;
 
     const where: Prisma.EmployeeWhereInput = {};
+    if (params.accessWhere) where.AND = [params.accessWhere];
 
     // Scope check: If caller only has OWN scope, force filter to callerId
     if (params.isOwnScopeOnly) {
@@ -296,9 +356,10 @@ export class EmployeesService {
         email: emp.email,
         phone: canViewSensitive ? emp.phone : null,
         status: emp.status,
-        dateOfJoining: canViewSensitive && emp.dateOfJoining
-          ? emp.dateOfJoining.toISOString().split('T')[0]
-          : null,
+        dateOfJoining:
+          canViewSensitive && emp.dateOfJoining
+            ? emp.dateOfJoining.toISOString().split('T')[0]
+            : null,
         departmentId: emp.departmentId,
         departmentName: emp.department?.name ?? null,
         designationId: emp.designationId,
@@ -360,9 +421,10 @@ export class EmployeesService {
       email: emp.email,
       phone: canViewSensitive ? emp.phone : null,
       status: emp.status,
-      dateOfJoining: canViewSensitive && emp.dateOfJoining
-        ? emp.dateOfJoining.toISOString().split('T')[0]
-        : null,
+      dateOfJoining:
+        canViewSensitive && emp.dateOfJoining
+          ? emp.dateOfJoining.toISOString().split('T')[0]
+          : null,
       departmentId: emp.departmentId,
       departmentName: emp.department?.name ?? null,
       designationId: emp.designationId,
@@ -496,45 +558,46 @@ export class EmployeesService {
     ipAddress?: string,
     userAgent?: string,
   ): Promise<{ success: boolean; message: string }> {
-    const employee = await this.prisma.employee.findUnique({
-      where: { id },
-      include: { roles: { include: { role: true } } },
-    });
-
-    if (!employee) {
-      throw new NotFoundException('Employee not found.');
-    }
-
-    if (employee.status === 'INACTIVE') {
-      return { success: true, message: 'Employee is already inactive.' };
-    }
-
-    // Protection check: Last active SYSTEM_ADMIN
-    const isSystemAdmin = employee.roles.some((r) => r.role.code === 'SYSTEM_ADMIN');
-    if (isSystemAdmin) {
-      const otherActiveAdminsCount = await this.prisma.employee.count({
-        where: {
-          id: { not: id },
-          status: 'ACTIVE',
-          roles: {
-            some: {
-              role: { code: 'SYSTEM_ADMIN' },
-            },
-          },
-        },
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(42002);`;
+      const employee = await tx.employee.findUnique({
+        where: { id },
+        include: { roles: { include: { role: true } } },
       });
 
-      if (otherActiveAdminsCount === 0) {
-        throw new ForbiddenException({
-          code: AppErrorCode.LAST_ADMIN_PROTECTED,
-          message: 'The last active System Administrator cannot be deactivated.',
-        });
+      if (!employee) {
+        throw new NotFoundException('Employee not found.');
       }
-    }
 
-    const now = new Date();
+      if (employee.status === 'INACTIVE') {
+        return { success: true, message: 'Employee is already inactive.' };
+      }
 
-    await this.prisma.$transaction(async (tx) => {
+      // Protection check: Last active SYSTEM_ADMIN
+      const isSystemAdmin = employee.roles.some((r) => r.role.code === 'SYSTEM_ADMIN');
+      if (isSystemAdmin) {
+        const otherActiveAdminsCount = await tx.employee.count({
+          where: {
+            id: { not: id },
+            status: 'ACTIVE',
+            roles: {
+              some: {
+                role: { code: 'SYSTEM_ADMIN' },
+              },
+            },
+          },
+        });
+
+        if (otherActiveAdminsCount === 0) {
+          throw new ForbiddenException({
+            code: AppErrorCode.LAST_ADMIN_PROTECTED,
+            message: 'The last active System Administrator cannot be deactivated.',
+          });
+        }
+      }
+
+      const now = new Date();
+
       await tx.employee.update({
         where: { id },
         data: {
@@ -543,7 +606,10 @@ export class EmployeesService {
         },
       });
 
-      await this.tokenService.revokeAllEmployeeSessions(id, 'DEACTIVATED');
+      await tx.refreshToken.updateMany({
+        where: { employeeId: id, revokedAt: null },
+        data: { revokedAt: now, revokedReason: 'DEACTIVATED' },
+      });
 
       await this.auditWriter.write(
         {
@@ -560,9 +626,8 @@ export class EmployeesService {
         },
         tx,
       );
+      return { success: true, message: 'Employee deactivated and all active sessions revoked.' };
     });
-
-    return { success: true, message: 'Employee deactivated and all active sessions revoked.' };
   }
 
   /**
@@ -625,49 +690,50 @@ export class EmployeesService {
     ipAddress?: string,
     userAgent?: string,
   ): Promise<{ success: boolean; roles: string[] }> {
-    const employee = await this.prisma.employee.findUnique({
-      where: { id },
-      include: { roles: { include: { role: true } } },
-    });
-
-    if (!employee) {
-      throw new NotFoundException('Employee not found.');
-    }
-
-    const currentRoles = employee.roles.map((r) => r.role.code);
-    const hasCurrentAdmin = currentRoles.includes('SYSTEM_ADMIN');
-    const willKeepAdmin = dto.roleCodes.includes('SYSTEM_ADMIN');
-
-    if (hasCurrentAdmin && !willKeepAdmin && employee.status === 'ACTIVE') {
-      const otherActiveAdminsCount = await this.prisma.employee.count({
-        where: {
-          id: { not: id },
-          status: 'ACTIVE',
-          roles: {
-            some: {
-              role: { code: 'SYSTEM_ADMIN' },
-            },
-          },
-        },
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(42002);`;
+      const employee = await tx.employee.findUnique({
+        where: { id },
+        include: { roles: { include: { role: true } } },
       });
 
-      if (otherActiveAdminsCount === 0) {
-        throw new ForbiddenException({
-          code: AppErrorCode.LAST_ADMIN_PROTECTED,
-          message: 'Cannot remove System Administrator role from the last active admin.',
-        });
+      if (!employee) {
+        throw new NotFoundException('Employee not found.');
       }
-    }
 
-    const targetRoles = await this.prisma.role.findMany({
-      where: { code: { in: dto.roleCodes }, isActive: true },
-    });
+      const currentRoles = employee.roles.map((r) => r.role.code);
+      const hasCurrentAdmin = currentRoles.includes('SYSTEM_ADMIN');
+      const willKeepAdmin = dto.roleCodes.includes('SYSTEM_ADMIN');
 
-    if (targetRoles.length !== dto.roleCodes.length) {
-      throw new BadRequestException('One or more specified role codes are invalid or inactive.');
-    }
+      if (hasCurrentAdmin && !willKeepAdmin && employee.status === 'ACTIVE') {
+        const otherActiveAdminsCount = await tx.employee.count({
+          where: {
+            id: { not: id },
+            status: 'ACTIVE',
+            roles: {
+              some: {
+                role: { code: 'SYSTEM_ADMIN' },
+              },
+            },
+          },
+        });
 
-    await this.prisma.$transaction(async (tx) => {
+        if (otherActiveAdminsCount === 0) {
+          throw new ForbiddenException({
+            code: AppErrorCode.LAST_ADMIN_PROTECTED,
+            message: 'Cannot remove System Administrator role from the last active admin.',
+          });
+        }
+      }
+
+      const targetRoles = await tx.role.findMany({
+        where: { code: { in: dto.roleCodes }, isActive: true },
+      });
+
+      if (targetRoles.length !== dto.roleCodes.length) {
+        throw new BadRequestException('One or more specified role codes are invalid or inactive.');
+      }
+
       await tx.employeeRole.deleteMany({
         where: { employeeId: id },
       });
@@ -696,9 +762,8 @@ export class EmployeesService {
         },
         tx,
       );
+      return { success: true, roles: dto.roleCodes };
     });
-
-    return { success: true, roles: dto.roleCodes };
   }
 
   /**
@@ -725,9 +790,7 @@ export class EmployeesService {
       type: argon2.argon2id,
     });
     const now = new Date();
-    const tempPasswordExpiresAt = new Date(
-      now.getTime() + this.tempPasswordHours * 3600 * 1000,
-    );
+    const tempPasswordExpiresAt = new Date(now.getTime() + this.tempPasswordHours * 3600 * 1000);
 
     await this.prisma.$transaction(async (tx) => {
       await tx.employee.update({
@@ -823,10 +886,7 @@ export class EmployeesService {
   /**
    * Lists active sessions for an employee.
    */
-  async getEmployeeSessions(
-    id: string,
-    currentFamilyId?: string,
-  ): Promise<SessionDto[]> {
+  async getEmployeeSessions(id: string, currentFamilyId?: string): Promise<SessionDto[]> {
     const tokens = await this.prisma.refreshToken.findMany({
       where: {
         employeeId: id,

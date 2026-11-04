@@ -11,11 +11,13 @@ describe('RolesService Protections', () => {
     rolePermission: { deleteMany: jest.Mock; create: jest.Mock };
     permission: { findUnique: jest.Mock };
     $transaction: jest.Mock;
+    $executeRaw: jest.Mock;
   };
   let auditWriterMock: { write: jest.Mock };
 
   beforeEach(() => {
     prismaMock = {
+      $executeRaw: jest.fn(),
       role: {
         findUnique: jest.fn(),
         update: jest.fn(),
@@ -50,9 +52,7 @@ describe('RolesService Protections', () => {
         _count: { employees: 0 },
       });
 
-      await expect(service.deactivateRole('role-1', 'actor-1')).rejects.toThrow(
-        ForbiddenException,
-      );
+      await expect(service.deactivateRole('role-1', 'actor-1')).rejects.toThrow(ForbiddenException);
     });
 
     it('should throw ForbiddenException when deactivating a custom role assigned to active employees', async () => {
@@ -64,9 +64,7 @@ describe('RolesService Protections', () => {
         _count: { employees: 3 }, // Active employees assigned!
       });
 
-      await expect(service.deactivateRole('role-2', 'actor-1')).rejects.toThrow(
-        ForbiddenException,
-      );
+      await expect(service.deactivateRole('role-2', 'actor-1')).rejects.toThrow(ForbiddenException);
     });
   });
 
@@ -90,9 +88,9 @@ describe('RolesService Protections', () => {
         ],
       };
 
-      await expect(
-        service.updateRole('role-admin', updateDto, 'actor-1'),
-      ).rejects.toThrow(ForbiddenException);
+      await expect(service.updateRole('role-admin', updateDto, 'actor-1')).rejects.toThrow(
+        ForbiddenException,
+      );
     });
   });
 });

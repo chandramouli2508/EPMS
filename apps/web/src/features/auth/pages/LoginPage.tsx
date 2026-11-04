@@ -16,7 +16,7 @@ export default function LoginPage() {
   const location = useLocation();
 
   // Redirect back to where the user came from after login
-  const from = (location.state as { from?: Location })?.from?.pathname ?? '/dashboard';
+  const from = (location.state as { from?: Location })?.from?.pathname ?? '/';
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

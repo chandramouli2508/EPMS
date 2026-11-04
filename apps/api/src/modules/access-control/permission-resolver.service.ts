@@ -18,9 +18,11 @@ export class PermissionResolverService {
    * Resolves the effective permissions for an employee across all their active roles.
    * Multi-role combination: Union of all permissions; widest scope wins.
    */
-  async resolvePermissionsForEmployee(
-    employeeId: string,
-  ): Promise<{ roles: string[]; permissions: Record<string, PermissionScope> }> {
+  async resolvePermissionsForEmployee(employeeId: string): Promise<{
+    roles: string[];
+    permissions: Record<string, PermissionScope>;
+    permissionScopes: Record<string, PermissionScope[]>;
+  }> {
     const employeeRoles = await this.prisma.employeeRole.findMany({
       where: {
         employeeId,
@@ -43,12 +45,16 @@ export class PermissionResolverService {
 
     const roles: string[] = [];
     const permissionMap: Record<string, PermissionScope> = {};
+    const permissionScopes: Record<string, PermissionScope[]> = {};
 
     for (const er of employeeRoles) {
       roles.push(er.role.code);
 
       for (const rp of er.role.permissions) {
         const key = rp.permission.key;
+        const scopes = permissionScopes[key] ?? [];
+        if (!scopes.includes(rp.scope)) scopes.push(rp.scope);
+        permissionScopes[key] = scopes;
         const currentScope = permissionMap[key];
         const newScope = rp.scope;
 
@@ -63,7 +69,16 @@ export class PermissionResolverService {
       }
     }
 
-    return { roles, permissions: permissionMap };
+    // Administrators always receive the complete registered catalog, including new keys.
+    if (roles.includes('SYSTEM_ADMIN')) {
+      const catalog = await this.prisma.permission.findMany({ select: { key: true } });
+      for (const permission of catalog) {
+        permissionMap[permission.key] = PermissionScope.ALL;
+        permissionScopes[permission.key] = [PermissionScope.ALL];
+      }
+    }
+
+    return { roles, permissions: permissionMap, permissionScopes };
   }
 
   /**

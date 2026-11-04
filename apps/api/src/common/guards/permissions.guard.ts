@@ -1,9 +1,4 @@
-import {
-  CanActivate,
-  ExecutionContext,
-  ForbiddenException,
-  Injectable,
-} from '@nestjs/common';
+import { CanActivate, ExecutionContext, ForbiddenException, Injectable } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { PermissionScope } from '@prisma/client';
 import { AppErrorCode } from '@epms/shared';
@@ -74,9 +69,10 @@ export class PermissionsGuard implements CanActivate {
     }
 
     // ─── Permission Check (if specified) ─────────────────────────────────────
-    const requiredPermissions = this.reflector.getAllAndOverride<
-      (string | RequiredPermission)[]
-    >(PERMISSIONS_KEY, [context.getHandler(), context.getClass()]);
+    const requiredPermissions = this.reflector.getAllAndOverride<(string | RequiredPermission)[]>(
+      PERMISSIONS_KEY,
+      [context.getHandler(), context.getClass()],
+    );
 
     if (!requiredPermissions || requiredPermissions.length === 0) {
       return true;
@@ -86,12 +82,28 @@ export class PermissionsGuard implements CanActivate {
       const key = typeof req === 'string' ? req : req.key;
       const minScope = typeof req === 'string' ? undefined : req.scope;
 
+      if (
+        (key.startsWith('roles.') || key.startsWith('users.')) &&
+        !user.roles.includes('SYSTEM_ADMIN')
+      ) {
+        throw new ForbiddenException(
+          'Account and role administration requires a System Administrator.',
+        );
+      }
+
       const userScope = user.permissions[key];
       if (!userScope) {
         throw new ForbiddenException({
           code: AppErrorCode.PERMISSION_DENIED,
           message: `Access denied. Missing required permission: ${key}`,
         });
+      }
+
+      if (
+        ['organization', 'audit', 'settings', 'roles', 'users'].includes(key.split('.')[0]) &&
+        userScope !== PermissionScope.ALL
+      ) {
+        throw new ForbiddenException('This action requires organization-wide scope.');
       }
 
       if (minScope && SCOPE_RANK[userScope] < SCOPE_RANK[minScope]) {

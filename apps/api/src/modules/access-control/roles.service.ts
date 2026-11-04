@@ -11,13 +11,6 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { AuditWriterService } from '../../infrastructure/audit/audit-writer.service';
 import { CreateRoleDto, DuplicateRoleDto, UpdateRoleDto } from './dto/role.dto';
 
-const SYSTEM_ADMIN_REQUIRED_GRANTS: Record<string, PermissionScope> = {
-  'roles.view': PermissionScope.ALL,
-  'roles.edit': PermissionScope.ALL,
-  'users.assign_roles': PermissionScope.ALL,
-  'employees.view': PermissionScope.ALL,
-};
-
 @Injectable()
 export class RolesService {
   constructor(
@@ -130,6 +123,7 @@ export class RolesService {
     userAgent?: string,
   ): Promise<RoleDto> {
     const code = dto.code.trim().toUpperCase();
+    this.validateGrants(dto.permissions);
 
     const existing = await this.prisma.role.findUnique({ where: { code } });
     if (existing) {
@@ -273,6 +267,7 @@ export class RolesService {
     ipAddress?: string,
     userAgent?: string,
   ): Promise<RoleDto> {
+    this.validateGrants(dto.permissions);
     const role = await this.prisma.role.findUnique({
       where: { id },
       include: {
@@ -304,15 +299,9 @@ export class RolesService {
 
     // SYSTEM_ADMIN core permissions enforcement
     if (role.code === 'SYSTEM_ADMIN' && dto.permissions) {
-      for (const [reqKey, reqScope] of Object.entries(SYSTEM_ADMIN_REQUIRED_GRANTS)) {
-        const found = dto.permissions.find((p) => p.permissionKey === reqKey);
-        if (!found || found.scope !== reqScope) {
-          throw new ForbiddenException({
-            code: AppErrorCode.ROLE_PROTECTED_CANNOT_DELETE,
-            message: `SYSTEM_ADMIN must always keep ${reqKey} at scope ${reqScope}.`,
-          });
-        }
-      }
+      throw new ForbiddenException(
+        'System Administrator permissions are read-only and always grant full access.',
+      );
     }
 
     const previousGrants = role.permissions.map((rp) => ({
@@ -371,6 +360,39 @@ export class RolesService {
     return this.getRole(id);
   }
 
+  private validateGrants(grants?: CreateRoleDto['permissions']) {
+    if (!grants) return;
+    if (new Set(grants.map((grant) => grant.permissionKey)).size !== grants.length) {
+      throw new BadRequestException('Duplicate permission keys are not allowed.');
+    }
+    for (const grant of grants) {
+      if (
+        grant.permissionKey === 'employees.view_sensitive' &&
+        ![PermissionScope.OWN, PermissionScope.ALL].includes(grant.scope as 'OWN' | 'ALL')
+      ) {
+        throw new BadRequestException('Sensitive employee access supports OWN or ALL scope.');
+      }
+      const employeeRecordAction = [
+        'employees.view',
+        'employees.edit',
+        'employees.deactivate',
+        'employees.view_sensitive',
+      ].includes(grant.permissionKey);
+      if (employeeRecordAction && grant.scope === PermissionScope.ASSIGNED) {
+        throw new BadRequestException('Employee records do not support project-assignment scope.');
+      }
+      if (
+        !employeeRecordAction &&
+        grant.scope !== PermissionScope.ALL &&
+        ['employees', 'users', 'roles', 'organization', 'audit', 'settings'].includes(
+          grant.permissionKey.split('.')[0],
+        )
+      ) {
+        throw new BadRequestException(`${grant.permissionKey} requires ALL scope.`);
+      }
+    }
+  }
+
   /**
    * Deactivates a custom role.
    * Enforces rules:
@@ -383,36 +405,37 @@ export class RolesService {
     ipAddress?: string,
     userAgent?: string,
   ): Promise<{ success: boolean; message: string }> {
-    const role = await this.prisma.role.findUnique({
-      where: { id },
-      include: {
-        _count: {
-          select: {
-            employees: { where: { employee: { status: 'ACTIVE' } } },
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(42002);`;
+      const role = await tx.role.findUnique({
+        where: { id },
+        include: {
+          _count: {
+            select: {
+              employees: { where: { employee: { status: 'ACTIVE' } } },
+            },
           },
         },
-      },
-    });
-
-    if (!role) {
-      throw new NotFoundException('Role not found.');
-    }
-
-    if (role.isSystem) {
-      throw new ForbiddenException({
-        code: AppErrorCode.ROLE_PROTECTED_CANNOT_DELETE,
-        message: 'System roles cannot be deactivated or deleted.',
       });
-    }
 
-    if (role._count.employees > 0) {
-      throw new ForbiddenException({
-        code: AppErrorCode.ROLE_CANNOT_DEACTIVATE_ASSIGNED,
-        message: `Cannot deactivate role '${role.name}' because ${role._count.employees} active employee(s) hold this role. Reassign their roles first.`,
-      });
-    }
+      if (!role) {
+        throw new NotFoundException('Role not found.');
+      }
 
-    await this.prisma.$transaction(async (tx) => {
+      if (role.isSystem) {
+        throw new ForbiddenException({
+          code: AppErrorCode.ROLE_PROTECTED_CANNOT_DELETE,
+          message: 'System roles cannot be deactivated or deleted.',
+        });
+      }
+
+      if (role._count.employees > 0) {
+        throw new ForbiddenException({
+          code: AppErrorCode.ROLE_CANNOT_DEACTIVATE_ASSIGNED,
+          message: `Cannot deactivate role '${role.name}' because ${role._count.employees} active employee(s) hold this role. Reassign their roles first.`,
+        });
+      }
+
       await tx.role.update({
         where: { id },
         data: { isActive: false },
@@ -432,8 +455,7 @@ export class RolesService {
         },
         tx,
       );
+      return { success: true, message: 'Role deactivated successfully.' };
     });
-
-    return { success: true, message: 'Role deactivated successfully.' };
   }
 }

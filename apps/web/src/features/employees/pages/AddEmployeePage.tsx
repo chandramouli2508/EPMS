@@ -41,7 +41,7 @@ export default function AddEmployeePage() {
       await create.mutateAsync({
         fullName: `${value('firstName')} ${value('lastName')}`,
         email: value('email').toLowerCase(),
-        roleCodes: roles,
+        ...(lookups.isAdmin ? { roleCodes: roles } : {}),
         ...Object.fromEntries(
           ['employeeCode', 'phone', 'dateOfJoining', 'departmentId', 'designationId', 'managerId']
             .filter((key) => value(key))
@@ -223,7 +223,11 @@ export default function AddEmployeePage() {
             </select>
             {fieldError('managerId')}
           </div>
-          <fieldset className="sm:col-span-2" aria-describedby="role-hint">
+          <fieldset
+            disabled={!lookups.isAdmin}
+            className="sm:col-span-2"
+            aria-describedby="role-hint"
+          >
             <legend className="mb-2 text-sm font-semibold">Roles</legend>
             <p id="role-hint" className="mb-3 text-xs text-surface-500">
               Select one or more. Managers and leaders also need the EMPLOYEE role for their own

@@ -12,6 +12,7 @@ export interface AuthenticatedUser {
   designationId?: string | null;
   roles: string[];
   permissions: Record<string, PermissionScope>;
+  permissionScopes?: Record<string, PermissionScope[]>;
   familyId?: string;
 }
 

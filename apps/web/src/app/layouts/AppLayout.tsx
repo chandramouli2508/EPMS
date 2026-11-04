@@ -3,20 +3,21 @@ import React, { useState } from 'react';
 import { NavLink, Outlet } from 'react-router-dom';
 import { useAuth } from '@/app/providers/AuthProvider';
 import { ErrorBoundary } from '@/app/ErrorBoundary';
-import { usePermission } from '@/shared/permissions';
+import { usePermissions } from '@/shared/permissions';
 
 const NAV_ITEMS = [
-  { name: 'Dashboard', path: '/dashboard' },
-  { name: 'Projects', path: '/projects' },
-  { name: 'Timesheets', path: '/timesheets' },
-  { name: 'Team', path: '/team' },
-  { name: 'Reports', path: '/reports' },
-  { name: 'Settings', path: '/settings' },
+  { name: 'Dashboard', path: '/dashboard', permission: 'reports.view' },
+  { name: 'Projects', path: '/projects', permission: 'projects.view' },
+  { name: 'Timesheets', path: '/timesheets', permission: 'timesheets.view' },
+  { name: 'Team', path: '/team', permission: 'organization.view' },
+  { name: 'Reports', path: '/reports', permission: 'reports.view' },
+  { name: 'Roles & Permissions', path: '/settings', permission: 'roles.view' },
 ];
 
 export function AppLayout() {
   const { logout } = useAuth();
-  const canViewEmployees = usePermission('employees.view');
+  const permissions = usePermissions();
+  const canViewEmployees = permissions.can('employees.view');
   const [signingOut, setSigningOut] = useState(false);
   const [logoutError, setLogoutError] = useState('');
 
@@ -55,7 +56,9 @@ export function AppLayout() {
               Employees
             </NavLink>
           )}
-          {NAV_ITEMS.map((item) => (
+          {NAV_ITEMS.filter((item) =>
+            item.path === '/settings' ? permissions.isAdmin : permissions.can(item.permission),
+          ).map((item) => (
             <NavLink
               key={item.path}
               to={item.path}

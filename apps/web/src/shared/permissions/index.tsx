@@ -11,10 +11,17 @@ export function usePermissions() {
     queryFn: () => http.get<CurrentUserDto>('/auth/me'),
     enabled: status === 'authenticated',
     staleTime: 30_000,
+    refetchInterval: 30_000,
+    refetchOnWindowFocus: 'always',
   });
   return {
     ...query,
-    can: (key: string) => status === 'authenticated' && Boolean(query.data?.permissions[key]),
+    isAdmin:
+      status === 'authenticated' &&
+      !query.error &&
+      Boolean(query.data?.roles?.includes('SYSTEM_ADMIN')),
+    can: (key: string) =>
+      status === 'authenticated' && !query.error && Boolean(query.data?.permissions[key]),
   };
 }
 

@@ -49,22 +49,24 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
     }
 
     // Access tokens must stop working immediately after logout or revocation.
-    const session = payload.familyId && await this.prisma.refreshToken.findFirst({
-      where: {
-        employeeId: employee.id,
-        familyId: payload.familyId,
-        revokedAt: null,
-        rotatedAt: null,
-        expiresAt: { gt: new Date() },
-      },
-      select: { id: true },
-    });
+    const session =
+      payload.familyId &&
+      (await this.prisma.refreshToken.findFirst({
+        where: {
+          employeeId: employee.id,
+          familyId: payload.familyId,
+          revokedAt: null,
+          rotatedAt: null,
+          expiresAt: { gt: new Date() },
+        },
+        select: { id: true },
+      }));
     if (!session) {
       throw new UnauthorizedException('Session has expired or been revoked.');
     }
 
     // Resolve permissions fresh on every request to reflect immediate grants/revocations
-    const { roles, permissions } =
+    const { roles, permissions, permissionScopes } =
       await this.permissionResolver.resolvePermissionsForEmployee(employee.id);
 
     return {
@@ -77,6 +79,7 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
       designationId: employee.designationId,
       roles,
       permissions,
+      permissionScopes,
       familyId: payload.familyId,
     };
   }

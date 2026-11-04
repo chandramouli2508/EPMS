@@ -48,9 +48,11 @@ function PageLoader() {
 export function ProtectedRoute({
   children,
   permission,
+  adminOnly = false,
 }: {
   children?: React.ReactNode;
   permission?: string;
+  adminOnly?: boolean;
 }) {
   const { status } = useAuth();
   const location = useLocation();
@@ -71,7 +73,7 @@ export function ProtectedRoute({
     return <Navigate to="/login" replace state={{ from: location }} />;
   }
 
-  if (permission) {
+  if (permission || adminOnly) {
     if (permissions.isPending)
       return (
         <p role="status" className="p-8">
@@ -84,7 +86,7 @@ export function ProtectedRoute({
           Could not check access. <button onClick={() => void permissions.refetch()}>Retry</button>
         </div>
       );
-    if (!permissions.can(permission))
+    if ((adminOnly && !permissions.isAdmin) || (permission && !permissions.can(permission)))
       return (
         <p role="alert" className="p-8">
           You do not have permission to access this page.
@@ -124,14 +126,63 @@ export function AppRoutes() {
             </ProtectedRoute>
           }
         >
-          <Route index element={<Navigate to="/dashboard" replace />} />
-          <Route path="/dashboard" element={<DashboardPage />} />
-          <Route path="/projects" element={<ProjectsListPage />} />
-          <Route path="/projects/:projectId" element={<ProjectDetailPage />} />
-          <Route path="/timesheets" element={<TimesheetsPage />} />
-          <Route path="/team" element={<TeamPage />} />
-          <Route path="/reports" element={<ReportsPage />} />
-          <Route path="/settings" element={<SettingsPage />} />
+          <Route index element={<HomeRoute />} />
+          <Route
+            path="/dashboard"
+            element={
+              <ProtectedRoute permission="reports.view">
+                <DashboardPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/projects"
+            element={
+              <ProtectedRoute permission="projects.view">
+                <ProjectsListPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/projects/:projectId"
+            element={
+              <ProtectedRoute permission="projects.view">
+                <ProjectDetailPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/timesheets"
+            element={
+              <ProtectedRoute permission="timesheets.view">
+                <TimesheetsPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/team"
+            element={
+              <ProtectedRoute permission="organization.view">
+                <TeamPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/reports"
+            element={
+              <ProtectedRoute permission="reports.view">
+                <ReportsPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/settings"
+            element={
+              <ProtectedRoute adminOnly>
+                <SettingsPage />
+              </ProtectedRoute>
+            }
+          />
           <Route
             path="/employees"
             element={
@@ -154,5 +205,33 @@ export function AppRoutes() {
         <Route path="*" element={<NotFoundPage />} />
       </Routes>
     </Suspense>
+  );
+}
+
+function HomeRoute() {
+  const permissions = usePermissions();
+  if (permissions.isPending) return <p role="status">Checking access...</p>;
+  if (permissions.error)
+    return (
+      <div role="alert">
+        Could not check access. <button onClick={() => void permissions.refetch()}>Retry</button>
+      </div>
+    );
+  const pages = [
+    ['reports.view', '/dashboard'],
+    ['projects.view', '/projects'],
+    ['timesheets.view', '/timesheets'],
+    ['employees.view', '/employees'],
+    ['organization.view', '/team'],
+  ];
+  const target = permissions.isAdmin
+    ? '/dashboard'
+    : pages.find(([key]) => permissions.can(key))?.[1];
+  return target ? (
+    <Navigate to={target} replace />
+  ) : (
+    <p role="status">
+      No application access has been assigned. Contact your administrator to assign a role.
+    </p>
   );
 }

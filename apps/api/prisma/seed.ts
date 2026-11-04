@@ -59,7 +59,7 @@ type RoleDef = {
 const ROLES: Record<string, RoleDef> = {
   SYSTEM_ADMIN: {
     name: 'System Administrator',
-    description: 'Accounts, roles, organization, settings, audit. No finance or project content by default.',
+    description: 'Full application access, including role and user administration.',
     grants: {
       ALL: [
         'employees.view', 'employees.view_sensitive', 'employees.create', 'employees.edit', 'employees.deactivate',
